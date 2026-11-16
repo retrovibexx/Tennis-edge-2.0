@@ -159,63 +159,72 @@ def build_training_data(files):
         values = form.get(pid, [])
         return float(np.mean(values)) if values else 0.5
 
-    for match in matches.itertuples(index=False):
-        row = match._asdict()
-        winner, loser, surface = str(row["winner_id"]), str(row["loser_id"]), row["surface"]
-        names[winner] = str(row.get("winner_name", winner))
-        names[loser] = str(row.get("loser_name", loser))
+    # Build every match's features from information available before that
+    # calendar day. Apply that day's results only after all its rows are scored,
+    # preventing same-day outcomes from leaking into later matches that day.
+    for match_date, day_matches in matches.groupby("date", sort=True):
+        day_updates = []
+        for match in day_matches.itertuples(index=False):
+            row = match._asdict()
+            winner, loser, surface = str(row["winner_id"]), str(row["loser_id"]), row["surface"]
+            names[winner] = str(row.get("winner_name", winner))
+            names[loser] = str(row.get("loser_name", loser))
 
-        winner_rank = _number(row.get("winner_rank"))
-        loser_rank = _number(row.get("loser_rank"))
-        rank_advantage = (
-            np.log1p(loser_rank) - np.log1p(winner_rank)
-            if np.isfinite(winner_rank) and np.isfinite(loser_rank)
-            and winner_rank > 0 and loser_rank > 0 else 0.0
-        )
-        best_of = _number(row.get("best_of"), 3)
-        if not np.isfinite(best_of):
-            best_of = 3
+            winner_rank = _number(row.get("winner_rank"))
+            loser_rank = _number(row.get("loser_rank"))
+            rank_advantage = (
+                np.log1p(loser_rank) - np.log1p(winner_rank)
+                if np.isfinite(winner_rank) and np.isfinite(loser_rank)
+                and winner_rank > 0 and loser_rank > 0 else 0.0
+            )
+            best_of = _number(row.get("best_of"), 3)
+            if not np.isfinite(best_of):
+                best_of = 3
 
-        features = [
-            rating(winner) - rating(loser),
-            surface_rating(winner, surface) - surface_rating(loser, surface),
-            rank_advantage,
-            recent_form(winner) - recent_form(loser),
-            np.log1p(played.get(winner, 0)) - np.log1p(played.get(loser, 0)),
-            SURFACE_CODE[surface],
-            best_of,
-        ]
-        # The second row reverses player-relative differences only.
-        reverse = [-value if i < 5 else value for i, value in enumerate(features)]
-        feature_rows.extend([features, reverse])
-        labels.extend([1, 0])
-        row_dates.extend([row["date"], row["date"]])
+            features = [
+                rating(winner) - rating(loser),
+                surface_rating(winner, surface) - surface_rating(loser, surface),
+                rank_advantage,
+                recent_form(winner) - recent_form(loser),
+                np.log1p(played.get(winner, 0)) - np.log1p(played.get(loser, 0)),
+                SURFACE_CODE[surface],
+                best_of,
+            ]
+            reverse = [-value if i < 5 else value for i, value in enumerate(features)]
+            feature_rows.extend([features, reverse])
+            labels.extend([1, 0])
+            row_dates.extend([match_date, match_date])
+            day_updates.append((row, winner, loser, surface))
 
-        expected_winner = 1 / (1 + 10 ** ((rating(loser) - rating(winner)) / 400))
-        expected_surface = 1 / (
-            1 + 10 ** ((surface_rating(loser, surface) - surface_rating(winner, surface)) / 400)
-        )
-        level = str(row.get("tourney_level", "A"))
-        k_factor = 40 if level == "G" else 32 if level in ("M", "F") else 24
-        elo[winner] = rating(winner) + k_factor * (1 - expected_winner)
-        elo[loser] = rating(loser) - k_factor * (1 - expected_winner)
-        surface_elo[(winner, surface)] = surface_rating(winner, surface) + k_factor * (1 - expected_surface)
-        surface_elo[(loser, surface)] = surface_rating(loser, surface) - k_factor * (1 - expected_surface)
+        # Update ratings/form only after all matches on this date have features.
+        for row, winner, loser, surface in day_updates:
+            expected_winner = 1 / (1 + 10 ** ((rating(loser) - rating(winner)) / 400))
+            expected_surface = 1 / (
+                1 + 10 ** ((surface_rating(loser, surface) - surface_rating(winner, surface)) / 400)
+            )
+            level = str(row.get("tourney_level", "A"))
+            k_factor = 40 if level == "G" else 32 if level in ("M", "F") else 24
+            elo[winner] = rating(winner) + k_factor * (1 - expected_winner)
+            elo[loser] = rating(loser) - k_factor * (1 - expected_winner)
+            surface_elo[(winner, surface)] = surface_rating(winner, surface) + k_factor * (1 - expected_surface)
+            surface_elo[(loser, surface)] = surface_rating(loser, surface) - k_factor * (1 - expected_surface)
 
-        form.setdefault(winner, []).append(1.0)
-        form.setdefault(loser, []).append(0.0)
-        form[winner], form[loser] = form[winner][-10:], form[loser][-10:]
-        played[winner] = played.get(winner, 0) + 1
-        played[loser] = played.get(loser, 0) + 1
-        if np.isfinite(winner_rank):
-            ranks[winner] = winner_rank
-        if np.isfinite(loser_rank):
-            ranks[loser] = loser_rank
-        winner_age, loser_age = _number(row.get("winner_age")), _number(row.get("loser_age"))
-        if np.isfinite(winner_age):
-            ages[winner] = winner_age
-        if np.isfinite(loser_age):
-            ages[loser] = loser_age
+            form.setdefault(winner, []).append(1.0)
+            form.setdefault(loser, []).append(0.0)
+            form[winner], form[loser] = form[winner][-10:], form[loser][-10:]
+            played[winner] = played.get(winner, 0) + 1
+            played[loser] = played.get(loser, 0) + 1
+            winner_rank = _number(row.get("winner_rank"))
+            loser_rank = _number(row.get("loser_rank"))
+            if np.isfinite(winner_rank):
+                ranks[winner] = winner_rank
+            if np.isfinite(loser_rank):
+                ranks[loser] = loser_rank
+            winner_age, loser_age = _number(row.get("winner_age")), _number(row.get("loser_age"))
+            if np.isfinite(winner_age):
+                ages[winner] = winner_age
+            if np.isfinite(loser_age):
+                ages[loser] = loser_age
 
     player_state = {}
     for pid, value in elo.items():
