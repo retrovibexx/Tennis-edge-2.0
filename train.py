@@ -234,16 +234,7 @@ def build_training_data(files):
     dates = pd.DatetimeIndex(row_dates)
     return X, y, dates, player_state, len(matches)
 
-def main():
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    files = download_matches()
-    X, y, dates, players, match_count = build_training_data(files)
-
-    cutoff = pd.Series(dates).quantile(0.80)
-    train_mask, test_mask = dates < cutoff, dates >= cutoff
-    if int(train_mask.sum()) < 500 or int(test_mask.sum()) < 100:
-        raise RuntimeError("Not enough historical matches for a reliable train/test split.")
-
+def _new_models():
     xgb = XGBClassifier(
         n_estimators=400, max_depth=3, learning_rate=0.03,
         subsample=0.85, colsample_bytree=0.85, reg_lambda=5,
@@ -254,25 +245,87 @@ def main():
         StandardScaler(),
         LogisticRegression(C=0.35, max_iter=2000, random_state=42),
     )
+    return xgb, logistic
+
+
+def _score(y_true, probabilities):
+    probabilities = np.clip(np.asarray(probabilities), 1e-6, 1 - 1e-6)
+    return {
+        "accuracy": float(accuracy_score(y_true, probabilities >= 0.5)),
+        "log_loss": float(log_loss(y_true, probabilities)),
+        "brier_score": float(brier_score_loss(y_true, probabilities)),
+    }
+
+
+def main():
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    files = download_matches()
+    X, y, dates, players, match_count = build_training_data(files)
+
+    # Split by calendar date, never by individual rows. Both player-perspective
+    # rows from a match stay together, and the final 15% of dates are untouched
+    # until the model choice has been made on the earlier validation period.
+    unique_dates = pd.DatetimeIndex(sorted(pd.unique(dates)))
+    if len(unique_dates) < 20:
+        raise RuntimeError("Not enough distinct match dates for chronological validation.")
+    train_end = unique_dates[int(len(unique_dates) * 0.70)]
+    validation_end = unique_dates[int(len(unique_dates) * 0.85)]
+    train_mask = dates < train_end
+    validation_mask = (dates >= train_end) & (dates < validation_end)
+    test_mask = dates >= validation_end
+    if min(int(train_mask.sum()), int(validation_mask.sum()), int(test_mask.sum())) < 100:
+        raise RuntimeError("Not enough matches in chronological train/validation/test periods.")
+
+    xgb, logistic = _new_models()
     xgb.fit(X.loc[train_mask], y[train_mask])
     logistic.fit(X.loc[train_mask], y[train_mask])
 
-    probabilities = (
-        0.70 * xgb.predict_proba(X.loc[test_mask])[:, 1]
-        + 0.30 * logistic.predict_proba(X.loc[test_mask])[:, 1]
-    )
+    xgb_val = xgb.predict_proba(X.loc[validation_mask])[:, 1]
+    logistic_val = logistic.predict_proba(X.loc[validation_mask])[:, 1]
+
+    # Select blend weight using validation data only. The final test period is
+    # not consulted when choosing the blend.
+    candidate_weights = np.linspace(0.0, 1.0, 21)
+    validation_losses = []
+    for weight in candidate_weights:
+        blended = weight * xgb_val + (1.0 - weight) * logistic_val
+        validation_losses.append(log_loss(y[validation_mask], np.clip(blended, 1e-6, 1 - 1e-6)))
+    xgb_weight = float(candidate_weights[int(np.argmin(validation_losses))])
+
+    # Refit on train + validation, then evaluate exactly once on the held-out
+    # most-recent period.
+    development_mask = dates < validation_end
+    final_xgb, final_logistic = _new_models()
+    final_xgb.fit(X.loc[development_mask], y[development_mask])
+    final_logistic.fit(X.loc[development_mask], y[development_mask])
+    xgb_test = final_xgb.predict_proba(X.loc[test_mask])[:, 1]
+    logistic_test = final_logistic.predict_proba(X.loc[test_mask])[:, 1]
+    blended_test = xgb_weight * xgb_test + (1.0 - xgb_weight) * logistic_test
+
     metrics = {
+        "evaluation_method": "Chronological 70% train / 15% validation / 15% untouched test by calendar date",
         "matches": int(match_count),
         "csv_files": len(files),
+        "train_start": str(dates[train_mask].min().date()),
+        "train_end": str(dates[train_mask].max().date()),
+        "validation_start": str(dates[validation_mask].min().date()),
+        "validation_end": str(dates[validation_mask].max().date()),
         "test_start": str(dates[test_mask].min().date()),
         "test_end": str(dates[test_mask].max().date()),
-        "accuracy": float(accuracy_score(y[test_mask], probabilities >= 0.5)),
-        "log_loss": float(log_loss(y[test_mask], np.clip(probabilities, 1e-6, 1 - 1e-6))),
-        "brier_score": float(brier_score_loss(y[test_mask], probabilities)),
+        "test_rows": int(test_mask.sum()),
+        "xgboost_test": _score(y[test_mask], xgb_test),
+        "logistic_test": _score(y[test_mask], logistic_test),
+        "selected_blend_test": _score(y[test_mask], blended_test),
+        "selected_xgboost_weight": xgb_weight,
+        "validation_selected_weight_only": True,
     }
 
-    joblib.dump({"xgb": xgb, "logistic": logistic, "features": FEATURES},
-                ARTIFACT_DIR / "model.joblib")
+    joblib.dump({
+        "xgb": final_xgb,
+        "logistic": final_logistic,
+        "xgb_weight": xgb_weight,
+        "features": FEATURES,
+    }, ARTIFACT_DIR / "model.joblib")
     (ARTIFACT_DIR / "player_state.json").write_text(
         json.dumps({"players": players}), encoding="utf-8"
     )
