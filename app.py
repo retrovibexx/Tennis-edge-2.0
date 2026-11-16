@@ -3,6 +3,7 @@ import json
 import joblib
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import train
 
@@ -84,6 +85,111 @@ if len(player_names) < 2:
 def get_player(name):
     return max((players[pid] for pid in name_to_ids[name]),
                key=lambda record: record.get("matches", 0))
+
+# LIVE MATCH CENTER — separate from the historical training data
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_live_slate(status, api_key):
+    response = requests.get(
+        "https://api.livetennisapi.com/api/public/v1/matches",
+        params={"status": status, "limit": 100},
+        headers={"X-API-Key": api_key},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload.get("data", [])
+
+def live_player_name(match, side):
+    player = (match.get("players") or {}).get(side) or {}
+    return player.get("name") or player.get("full_name")
+
+def live_score_text(match):
+    score = match.get("score") or {}
+    sets = score.get("sets") or []
+    games = score.get("games") or []
+    bits = []
+    if sets:
+        bits.append("Sets " + "–".join(str(x) for x in sets))
+    if games and len(games) == 2:
+        per_set = []
+        for a, b in zip(games[0], games[1]):
+            per_set.append(f"{a}–{b}")
+        if per_set:
+            bits.append("Games " + "  ".join(per_set))
+    points = score.get("points") or []
+    if points:
+        bits.append("Points " + "–".join(str(x) for x in points))
+    return " · ".join(bits) if bits else "Score not posted yet"
+
+st.subheader("⚡ Live Match Center")
+live_key = st.secrets.get("LIVETENNISAPI_KEY", "")
+if not live_key:
+    st.info("Connect your Live Tennis API key in Streamlit → App settings → Secrets as LIVETENNISAPI_KEY.")
+else:
+    live_tab, upcoming_tab = st.tabs(["🔴 Live now", "📅 Upcoming"])
+    for tab, slate_status in [(live_tab, "live"), (upcoming_tab, "upcoming")]:
+        with tab:
+            try:
+                matches = fetch_live_slate(slate_status, live_key)
+                singles = []
+                for match in matches:
+                    p1, p2 = live_player_name(match, "p1"), live_player_name(match, "p2")
+                    if p1 and p2 and match.get("draw") != "doubles":
+                        singles.append(match)
+                if not singles:
+                    st.info("No singles matches are listed in this feed right now.")
+                else:
+                    labels, match_by_label = [], {}
+                    for match in singles:
+                        p1, p2 = live_player_name(match, "p1"), live_player_name(match, "p2")
+                        tournament = match.get("tournament") or "Tournament not listed"
+                        score_text = live_score_text(match) if slate_status == "live" else (match.get("scheduled_time") or "Start time TBA")
+                        label = f"{p1} vs {p2}  |  {tournament}  |  {score_text}"
+                        labels.append(label)
+                        match_by_label[label] = match
+                    selected_label = st.selectbox("Choose a match", labels, key=f"{slate_status}_match_select")
+                    selected_match = match_by_label[selected_label]
+                    p1, p2 = live_player_name(selected_match, "p1"), live_player_name(selected_match, "p2")
+                    surface_live = selected_match.get("surface")
+                    best_of_live = selected_match.get("best_of")
+                    c1, c2 = st.columns(2)
+                    c1.metric("Player 1", p1)
+                    c2.metric("Player 2", p2)
+                    st.caption(
+                        f"Tournament: {selected_match.get('tournament') or 'Not listed'}"
+                        f" · Surface: {surface_live or 'Not reported'}"
+                        f" · Round: {selected_match.get('round') or 'Not reported'}"
+                    )
+                    st.write("**Current score:** " + live_score_text(selected_match))
+                    if st.button("ANALYZE THIS MATCH", key=f"analyze_{slate_status}_match", type="primary", use_container_width=True):
+                        missing = [name for name in (p1, p2) if name not in name_to_ids]
+                        if missing:
+                            st.warning("The historical model does not have a matching player record for: " + ", ".join(missing) + ". Use Manual Entry to search the closest stored name.")
+                        else:
+                            st.session_state["search_player_a_v2"] = p1
+                            st.session_state["search_player_b_v2"] = p2
+                            st.session_state["choose_player_a_v2"] = p1
+                            st.session_state["choose_player_b_v2"] = p2
+                            if surface_live and surface_live.title() in SURFACE_CODE:
+                                st.session_state["surface_v2"] = surface_live.title()
+                            if best_of_live in (3, 5):
+                                st.session_state["best_of_v2"] = best_of_live
+                            st.session_state["live_match_context"] = {
+                                "match_id": selected_match.get("match_id") or selected_match.get("id"),
+                                "status": slate_status,
+                                "score": live_score_text(selected_match),
+                                "tournament": selected_match.get("tournament"),
+                                "surface": surface_live,
+                            }
+                            st.rerun()
+            except requests.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else "unknown"
+                st.error(f"Live match feed returned HTTP {status_code}. Check the API key and plan access in Streamlit Secrets.")
+            except requests.RequestException as exc:
+                st.warning(f"Could not load the live match feed right now: {exc}")
+            except (ValueError, TypeError) as exc:
+                st.warning(f"The live match feed returned an unexpected response: {exc}")
+    st.caption("Match lists are cached for 60 seconds to respect the free API quota.")
 
 st.subheader("Match setup")
 surface = st.selectbox("Surface", list(SURFACE_CODE), key="surface_v2")
