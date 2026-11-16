@@ -242,7 +242,16 @@ else:
                             st.rerun()
             except requests.HTTPError as exc:
                 status_code = exc.response.status_code if exc.response is not None else "unknown"
-                st.error(f"Live match feed returned HTTP {status_code}. Check the API key and plan access in Streamlit Secrets.")
+                detail = ""
+                if exc.response is not None:
+                    try:
+                        detail = exc.response.text[:700]
+                    except Exception:
+                        detail = ""
+                st.error(f"Live match feed returned HTTP {status_code}.")
+                if detail:
+                    st.code(detail, language="text")
+                st.info("For this feed, the key must be saved as LIVETENNISAPI_KEY in Streamlit Secrets. The provider's FREE tier includes live and upcoming match lists; 403 response details will tell us whether the key, account, or access was refused.")
             except requests.RequestException as exc:
                 st.warning(f"Could not load the live match feed right now: {exc}")
             except (ValueError, TypeError) as exc:
