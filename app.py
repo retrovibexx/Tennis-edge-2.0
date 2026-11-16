@@ -61,12 +61,19 @@ def load_or_train_model():
     player_data = json.loads(PLAYERS_PATH.read_text(encoding="utf-8"))["players"]
     return model_bundle, player_data
 
-if st.sidebar.button("Update tennis data & retrain", use_container_width=True):
-    for artifact in (MODEL_PATH, PLAYERS_PATH, METRICS_PATH):
-        if artifact.exists():
-            artifact.unlink()
-    load_or_train_model.clear()
-    st.rerun()
+if st.button("🔄 UPDATE TENNIS DATA & RETRAIN MODEL", type="primary", use_container_width=True):
+    with st.spinner("Updating historical tennis data and retraining the model…"):
+        for artifact in (MODEL_PATH, PLAYERS_PATH, METRICS_PATH):
+            if artifact.exists():
+                artifact.unlink()
+        load_or_train_model.clear()
+        try:
+            train.main()
+            st.success("Tennis data updated and model retrained successfully.")
+            st.rerun()
+        except Exception as exc:
+            st.error("The data update or model retraining failed.")
+            st.exception(exc)
 
 try:
     with st.spinner("Preparing Tennis Edge AI — training the model automatically on first launch…"):
@@ -239,23 +246,6 @@ live_key = st.secrets.get("LIVETENNISAPI_KEY", "")
 if not live_key:
     st.info("Connect your Live Tennis API key in Streamlit → App settings → Secrets as LIVETENNISAPI_KEY.")
 else:
-    if st.button("TEST RAPIDAPI CONNECTION", use_container_width=True):
-        try:
-            with st.spinner("Checking the RapidAPI live-events endpoint…"):
-                test_rows = fetch_rapid_live(st.secrets.get("TENNIS_RAPIDAPI_KEY", ""))
-            st.success(f"RapidAPI connection successful. The provider returned {len(test_rows)} live event(s).")
-            if not test_rows:
-                st.caption("An empty live list is valid when no matches are currently in play.")
-        except requests.HTTPError as exc:
-            code = exc.response.status_code if exc.response is not None else "unknown"
-            detail = exc.response.text[:500] if exc.response is not None else ""
-            st.error(f"RapidAPI connection failed with HTTP {code}.")
-            if detail:
-                st.code(detail, language="text")
-        except requests.RequestException as exc:
-            st.error(f"RapidAPI connection failed: {exc}")
-        except (ValueError, TypeError) as exc:
-            st.error(f"RapidAPI returned an unexpected response: {exc}")
     live_tab, upcoming_tab = st.tabs(["🔴 Live now", "📅 Upcoming"])
     for tab, slate_status in [(live_tab, "live"), (upcoming_tab, "upcoming")]:
         with tab:
