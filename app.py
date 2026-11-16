@@ -124,6 +124,45 @@ def fetch_draftkings_live_odds(event_id, api_key):
     response.raise_for_status()
     return response.json().get("result", {})
 
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_named_match_odds(player_one, player_two, match_date, api_key):
+    from urllib.parse import quote
+    p1 = quote(player_one, safe="")
+    p2 = quote(player_two, safe="")
+    url = f"https://tennis-api-atp-wta-itf.p.rapidapi.com/tennis/v2/extend/api/event/get/{p1}/{p2}/{match_date}"
+    response = requests.get(
+        url, params={"odds": "yes"},
+        headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json()
+
+def extract_draftkings_quotes(payload):
+    found = []
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if "draftkings" in str(key).casefold():
+                    if isinstance(value, dict):
+                        for market, quote in value.items():
+                            if isinstance(quote, dict) and quote.get("od1") and quote.get("od2"):
+                                found.append((str(market), quote))
+                            elif isinstance(quote, list):
+                                for item in quote:
+                                    if isinstance(item, dict) and item.get("od1") and item.get("od2"):
+                                        found.append((str(market), item))
+                    elif isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, dict) and item.get("od1") and item.get("od2"):
+                                found.append(("Match winner", item))
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+    walk(payload.get("result") or {})
+    return found
+
 def live_score_text(match):
     score = match.get("score") or {}
     sets = score.get("sets") or []
@@ -285,6 +324,43 @@ if not options_b:
 else:
     default_b_index = 0
     player_b_name = st.selectbox("Choose Player B", options_b, index=default_b_index, key="choose_player_b_v2")
+
+st.subheader("🏷️ DraftKings odds lookup")
+st.caption("This uses RapidAPI independently of the Live Tennis API match feed.")
+rapid_odds_key = st.secrets.get("TENNIS_RAPIDAPI_KEY", "")
+odds_match_date = st.date_input("Match date for DraftKings lookup", value=__import__("datetime").date.today(), key="dk_match_date")
+if st.button("FETCH DRAFTKINGS ODDS", use_container_width=True, disabled=not bool(rapid_odds_key) or not bool(player_a_name and player_b_name)):
+    try:
+        with st.spinner("Looking up this matchup and DraftKings prices…"):
+            odds_payload = fetch_named_match_odds(player_a_name, player_b_name, odds_match_date.isoformat(), rapid_odds_key)
+        dk_quotes = extract_draftkings_quotes(odds_payload)
+        if dk_quotes:
+            st.session_state["dk_lookup_quotes"] = [
+                {"market": market, "player_a": quote.get("od1"), "player_b": quote.get("od2"),
+                 "updated": quote.get("addTime"), "type": quote.get("oddType")}
+                for market, quote in dk_quotes
+            ]
+            first = dk_quotes[0][1]
+            try:
+                st.session_state["odds_a_v2"] = float(first.get("od1"))
+                st.session_state["odds_b_v2"] = float(first.get("od2"))
+            except (TypeError, ValueError):
+                pass
+            st.success("DraftKings prices found. The first quote has been loaded into the odds fields below.")
+        else:
+            st.session_state["dk_lookup_quotes"] = []
+            st.info("No DraftKings quote was returned for this matchup/date.")
+    except requests.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else "unknown"
+        detail = exc.response.text[:500] if exc.response is not None else ""
+        st.error(f"RapidAPI odds lookup returned HTTP {code}.")
+        if detail:
+            st.code(detail, language="text")
+    except requests.RequestException as exc:
+        st.error(f"Could not retrieve DraftKings odds: {exc}")
+
+for quote in st.session_state.get("dk_lookup_quotes", []):
+    st.write(f"**{quote['market']}** — Player A: {quote['player_a']} · Player B: {quote['player_b']} · {quote.get('type') or 'odds'}")
 
 odds_a = st.number_input("Player A decimal odds", min_value=1.01, value=1.80, step=0.01, key="odds_a_v2")
 odds_b = st.number_input("Player B decimal odds", min_value=1.01, value=2.10, step=0.01, key="odds_b_v2")
