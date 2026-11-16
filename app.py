@@ -92,7 +92,7 @@ def fetch_live_slate(status, api_key):
     response = requests.get(
         "https://api.livetennisapi.com/api/public/v1/matches",
         params={"status": status, "limit": 100},
-        headers={"X-API-Key": api_key},
+        headers={"Authorization": f"Bearer {api_key}"},
         timeout=20,
     )
     response.raise_for_status()
