@@ -13,7 +13,10 @@ PLAYERS_PATH = ARTIFACT_DIR / "player_state.json"
 METRICS_PATH = ARTIFACT_DIR / "metrics.json"
 FEATURES = [
     "elo_diff", "surface_elo_diff", "rank_advantage",
-    "form_diff", "experience_diff", "surface_code", "best_of"
+    "form_diff", "form5_diff", "experience_diff",
+    "h2h_diff", "rest_days_diff", "workload30_diff",
+    "serve_win_diff", "return_win_diff",
+    "surface_code", "best_of"
 ]
 SURFACE_CODE = {"Hard": 0, "Clay": 1, "Grass": 2, "Carpet": 3}
 
@@ -495,6 +498,11 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
         np.log1p(rank_b) - np.log1p(rank_a),
         a["form10"] - b["form10"],
         np.log1p(a["matches"]) - np.log1p(b["matches"]),
+        0.0,  # pair-specific head-to-head unavailable in player-only state
+        0.0,  # rest/workload require dated player history
+        0.0,
+        0.0,  # serve/return history not stored in the current player index
+        0.0,
         SURFACE_CODE[surface],
         best_of,
     ]], columns=FEATURES)
