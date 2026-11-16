@@ -497,12 +497,13 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
         a["surface_elo"].get(surface, 1500) - b["surface_elo"].get(surface, 1500),
         np.log1p(rank_b) - np.log1p(rank_a),
         a["form10"] - b["form10"],
+        a.get("form5", a["form10"]) - b.get("form5", b["form10"]),
         np.log1p(a["matches"]) - np.log1p(b["matches"]),
-        0.0,  # pair-specific head-to-head unavailable in player-only state
-        0.0,  # rest/workload require dated player history
-        0.0,
-        0.0,  # serve/return history not stored in the current player index
-        0.0,
+        0.0,  # pair-specific head-to-head will be added when matchup history is persisted
+        0.0,  # rest-days history is not retained in the current player index
+        0.0,  # 30-day workload history is not retained in the current player index
+        a.get("serve_win_rate", 0.5) - b.get("serve_win_rate", 0.5),
+        a.get("return_win_rate", 0.5) - b.get("return_win_rate", 0.5),
         SURFACE_CODE[surface],
         best_of,
     ]], columns=FEATURES)
