@@ -87,7 +87,7 @@ def get_player(name):
                key=lambda record: record.get("matches", 0))
 
 # LIVE MATCH CENTER — separate from the historical training data
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_live_slate(status, api_key):
     response = requests.get(
         "https://api.livetennisapi.com/api/public/v1/matches",
@@ -312,7 +312,7 @@ else:
                 st.warning(f"Could not load the live match feed right now: {exc}")
             except (ValueError, TypeError) as exc:
                 st.warning(f"The live match feed returned an unexpected response: {exc}")
-    st.caption("Match lists are cached for 60 seconds to respect the free API quota.")
+    st.caption("Live Tennis API match lists are cached for 5 minutes to reduce free-tier rate-limit usage.")
 
 st.subheader("Match setup")
 surface = st.selectbox("Surface", list(SURFACE_CODE), key="surface_v2")
