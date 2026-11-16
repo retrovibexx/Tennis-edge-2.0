@@ -125,6 +125,56 @@ def fetch_draftkings_live_odds(event_id, api_key):
     return response.json().get("result", {})
 
 @st.cache_data(ttl=30, show_spinner=False)
+def fetch_odds_movement(event_id, api_key):
+    response = requests.get(
+        f"https://tennis-api-atp-wta-itf.p.rapidapi.com/tennis/v2/extend/api/odds/summary/movements/last-10/{event_id}",
+        headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json()
+
+@st.cache_data(ttl=45, show_spinner=False)
+def fetch_match_momentum(match_id, match_type, api_key):
+    response = requests.get(
+        f"https://tennis-api-atp-wta-itf.p.rapidapi.com/tennis/v2/matches/{match_id}/momentum",
+        params={"type": match_type},
+        headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json()
+
+def find_quote_records(payload):
+    records = []
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("od1") is not None and node.get("od2") is not None:
+                records.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    walk(payload)
+    return records
+
+def find_draftkings(payload):
+    matches = []
+    def walk(node, path=""):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                next_path = f"{path}/{key}"
+                if "draftkings" in str(key).casefold():
+                    matches.extend(find_quote_records(value))
+                walk(value, next_path)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, path)
+    walk(payload)
+    return matches
+
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_named_match_odds(player_one, player_two, match_date, api_key):
     from urllib.parse import quote
     p1 = quote(player_one, safe="")
@@ -216,7 +266,10 @@ else:
                         p2 = row.get("participant2") or (row.get("player2") or {}).get("name")
                         if p1 and p2:
                             matches.append({
-                                "match_id": row.get("id"), "rapid_event_id": row.get("id"),
+                                "match_id": row.get("matchId") or row.get("match_id") or row.get("fixtureId"),
+                                "rapid_event_id": row.get("id") or row.get("eventId"),
+                                "rapid_raw": row,
+                                "match_type": str(row.get("type") or "atp").lower(),
                                 "players": {"p1": {"name": p1}, "p2": {"name": p2}},
                                 "tournament": row.get("league") or (row.get("tournament") or {}).get("name"),
                                 "surface": (row.get("tournament") or {}).get("surface"),
@@ -263,18 +316,61 @@ else:
                     rapid_key = st.secrets.get("TENNIS_RAPIDAPI_KEY", "")
                     rapid_event_id = selected_match.get("rapid_event_id")
                     if rapid_key and rapid_event_id:
+                        st.markdown("#### 📈 Live odds & momentum")
+                        refresh_live_panel = st.button("REFRESH LIVE ODDS + MOMENTUM", key=f"refresh_live_panel_{slate_status}", use_container_width=True)
                         try:
                             dk_payload = fetch_draftkings_live_odds(rapid_event_id, rapid_key)
-                            dk_market = dk_payload.get("Full Time Result", {})
-                            dk_quote = dk_market.get("DraftKings") or dk_market.get("draftkings")
-                            if dk_quote:
-                                st.success(f"DraftKings live odds — {p1}: {dk_quote.get('od1', '—')} · {p2}: {dk_quote.get('od2', '—')}")
+                            dk_quotes = find_draftkings(dk_payload)
+                            if dk_quotes:
+                                quote = dk_quotes[-1]
+                                st.success(f"DraftKings latest quote — {p1}: {quote.get('od1', '—')} · {p2}: {quote.get('od2', '—')}")
+                                st.caption(f"Quote timestamp: {quote.get('addTime') or quote.get('timestamp') or 'Not supplied by provider'}")
                             else:
-                                st.caption("DraftKings live odds are not currently posted for this match.")
-                        except requests.RequestException:
-                            st.caption("DraftKings live odds could not be refreshed right now.")
+                                st.info("Live odds endpoint responded, but no DraftKings match-winner quote was found in its response.")
+                        except requests.HTTPError as exc:
+                            code = exc.response.status_code if exc.response is not None else "unknown"
+                            st.warning(f"Live odds unavailable (HTTP {code}). Check RapidAPI subscription/plan access.")
+                        except requests.RequestException as exc:
+                            st.warning(f"Live odds request failed: {exc}")
+                        try:
+                            movement_payload = fetch_odds_movement(rapid_event_id, rapid_key)
+                            movement_quotes = find_draftkings(movement_payload)
+                            if movement_quotes:
+                                movement_rows = []
+                                for item in movement_quotes:
+                                    movement_rows.append({
+                                        "Updated": item.get("addTime") or item.get("timestamp") or "—",
+                                        p1: item.get("od1"), p2: item.get("od2")
+                                    })
+                                st.write("**DraftKings recent odds history**")
+                                st.dataframe(pd.DataFrame(movement_rows), use_container_width=True, hide_index=True)
+                                if len(movement_rows) >= 2:
+                                    st.caption("Compare earliest and latest returned quotes to see whether prices shortened or drifted.")
+                            else:
+                                st.caption("No DraftKings movement history was present in the returned data.")
+                        except requests.HTTPError as exc:
+                            code = exc.response.status_code if exc.response is not None else "unknown"
+                            st.caption(f"Odds movement endpoint unavailable (HTTP {code}).")
+                        except requests.RequestException as exc:
+                            st.caption(f"Odds movement request failed: {exc}")
+                        raw_event = selected_match.get("rapid_raw") or {}
+                        match_id = selected_match.get("match_id") or raw_event.get("id")
+                        match_type = selected_match.get("match_type") or "atp"
+                        if match_id:
+                            try:
+                                momentum_payload = fetch_match_momentum(match_id, match_type, rapid_key)
+                                st.write("**Match momentum feed**")
+                                momentum_result = momentum_payload.get("result", momentum_payload)
+                                st.json(momentum_result)
+                            except requests.HTTPError as exc:
+                                code = exc.response.status_code if exc.response is not None else "unknown"
+                                st.caption(f"Momentum endpoint unavailable (HTTP {code}); this event may not expose a compatible match ID.")
+                            except requests.RequestException as exc:
+                                st.caption(f"Momentum request failed: {exc}")
+                        else:
+                            st.caption("Momentum will appear when the live event includes its separate match ID.")
                     elif slate_status == "live":
-                        st.caption("Add TENNIS_RAPIDAPI_KEY in Streamlit Secrets to show DraftKings live odds.")
+                        st.caption("Add TENNIS_RAPIDAPI_KEY in Streamlit Secrets to enable live odds, movement, and momentum.")
                     if st.button("ANALYZE THIS MATCH", key=f"analyze_{slate_status}_match", type="primary", use_container_width=True):
                         missing = [name for name in (p1, p2) if name not in name_to_ids]
                         if missing:
