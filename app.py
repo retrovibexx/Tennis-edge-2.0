@@ -500,8 +500,8 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
         a.get("form5", a["form10"]) - b.get("form5", b["form10"]),
         np.log1p(a["matches"]) - np.log1p(b["matches"]),
         0.0,  # pair-specific head-to-head will be added when matchup history is persisted
-        0.0,  # rest-days history is not retained in the current player index
-        0.0,  # 30-day workload history is not retained in the current player index
+        (pd.Timestamp(a["last_played"]) - pd.Timestamp(b["last_played"])).days if a.get("last_played") and b.get("last_played") else 0.0,
+        float(b.get("workload30", 0)) - float(a.get("workload30", 0)),
         a.get("serve_win_rate", 0.5) - b.get("serve_win_rate", 0.5),
         a.get("return_win_rate", 0.5) - b.get("return_win_rate", 0.5),
         SURFACE_CODE[surface],
