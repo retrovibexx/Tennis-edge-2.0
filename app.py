@@ -103,6 +103,27 @@ def live_player_name(match, side):
     player = (match.get("players") or {}).get(side) or {}
     return player.get("name") or player.get("full_name")
 
+@st.cache_data(ttl=45, show_spinner=False)
+def fetch_rapid_live(api_key):
+    response = requests.get(
+        "https://tennis-api-atp-wta-itf.p.rapidapi.com/tennis/v2/extend/api/events/live",
+        headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json().get("results", [])
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_draftkings_live_odds(event_id, api_key):
+    response = requests.get(
+        f"https://tennis-api-atp-wta-itf.p.rapidapi.com/tennis/v2/extend/api/event/recent-odds/get/{event_id}",
+        params={"inplay": "true"},
+        headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json().get("result", {})
+
 def live_score_text(match):
     score = match.get("score") or {}
     sets = score.get("sets") or []
@@ -130,7 +151,24 @@ else:
     for tab, slate_status in [(live_tab, "live"), (upcoming_tab, "upcoming")]:
         with tab:
             try:
-                matches = fetch_live_slate(slate_status, live_key)
+                rapid_key = st.secrets.get("TENNIS_RAPIDAPI_KEY", "")
+                if slate_status == "live" and rapid_key:
+                    rapid_rows = fetch_rapid_live(rapid_key)
+                    matches = []
+                    for row in rapid_rows:
+                        p1 = row.get("participant1") or (row.get("player1") or {}).get("name")
+                        p2 = row.get("participant2") or (row.get("player2") or {}).get("name")
+                        if p1 and p2:
+                            matches.append({
+                                "match_id": row.get("id"), "rapid_event_id": row.get("id"),
+                                "players": {"p1": {"name": p1}, "p2": {"name": p2}},
+                                "tournament": row.get("league") or (row.get("tournament") or {}).get("name"),
+                                "surface": (row.get("tournament") or {}).get("surface"),
+                                "score": {"raw": row.get("score"), "points": row.get("points")},
+                                "status": row.get("status"),
+                            })
+                else:
+                    matches = fetch_live_slate(slate_status, live_key)
                 singles = []
                 for match in matches:
                     p1, p2 = live_player_name(match, "p1"), live_player_name(match, "p2")
@@ -160,7 +198,27 @@ else:
                         f" · Surface: {surface_live or 'Not reported'}"
                         f" · Round: {selected_match.get('round') or 'Not reported'}"
                     )
-                    st.write("**Current score:** " + live_score_text(selected_match))
+                    raw_live_score = (selected_match.get("score") or {}).get("raw")
+                    score_display = raw_live_score or live_score_text(selected_match)
+                    raw_points = (selected_match.get("score") or {}).get("points")
+                    if raw_points:
+                        score_display += f" · Points {raw_points}"
+                    st.write("**Current score:** " + score_display)
+                    rapid_key = st.secrets.get("TENNIS_RAPIDAPI_KEY", "")
+                    rapid_event_id = selected_match.get("rapid_event_id")
+                    if rapid_key and rapid_event_id:
+                        try:
+                            dk_payload = fetch_draftkings_live_odds(rapid_event_id, rapid_key)
+                            dk_market = dk_payload.get("Full Time Result", {})
+                            dk_quote = dk_market.get("DraftKings") or dk_market.get("draftkings")
+                            if dk_quote:
+                                st.success(f"DraftKings live odds — {p1}: {dk_quote.get('od1', '—')} · {p2}: {dk_quote.get('od2', '—')}")
+                            else:
+                                st.caption("DraftKings live odds are not currently posted for this match.")
+                        except requests.RequestException:
+                            st.caption("DraftKings live odds could not be refreshed right now.")
+                    elif slate_status == "live":
+                        st.caption("Add TENNIS_RAPIDAPI_KEY in Streamlit Secrets to show DraftKings live odds.")
                     if st.button("ANALYZE THIS MATCH", key=f"analyze_{slate_status}_match", type="primary", use_container_width=True):
                         missing = [name for name in (p1, p2) if name not in name_to_ids]
                         if missing:
