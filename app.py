@@ -62,17 +62,23 @@ def load_or_train_model():
     return model_bundle, player_data
 
 if st.button("🔄 UPDATE TENNIS DATA & RETRAIN MODEL", type="primary", use_container_width=True):
-    with st.spinner("Updating historical tennis data and retraining the model…"):
-        for artifact in (MODEL_PATH, PLAYERS_PATH, METRICS_PATH):
-            if artifact.exists():
-                artifact.unlink()
-        load_or_train_model.clear()
+    if st.session_state.get("tennis_training_active", False):
+        st.warning("A model update is already running. Please wait for it to finish.")
+    else:
+        st.session_state["tennis_training_active"] = True
         try:
-            train.main()
+            with st.spinner("Updating historical tennis data and retraining the model… Keep this page open until it finishes."):
+                # Keep the last working model in place until train.main() successfully
+                # writes its replacement. The training script overwrites artifacts at
+                # the end, so deleting them first only risks leaving the app without a model.
+                train.main()
+                load_or_train_model.clear()
+            st.session_state["tennis_training_active"] = False
             st.success("Tennis data updated and model retrained successfully.")
             st.rerun()
         except Exception as exc:
-            st.error("The data update or model retraining failed.")
+            st.session_state["tennis_training_active"] = False
+            st.error("The data update or model retraining failed. Your previous model files were not deliberately deleted.")
             st.exception(exc)
 
 try:
