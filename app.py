@@ -42,7 +42,7 @@ h1,h2,h3{color:#f5fff5!important;text-shadow:0 0 18px rgba(135,255,0,.38)}
 .stButton>button{border-radius:12px}
 </style>""", unsafe_allow_html=True)
 st.title("🎾 Tennis Edge AI")
-st.caption("Historical ATP/WTA match data • Estimated match-winner probabilities")
+st.caption("Historical ATP/WTA match data • Chronologically validated match-winner probabilities")
 
 @st.cache_resource(show_spinner=False)
 def load_or_train_model():
@@ -499,9 +499,11 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
         best_of,
     ]], columns=FEATURES)
 
+    xgb_weight = float(bundle.get("xgb_weight", 0.70))
+    logistic_weight = 1.0 - xgb_weight
     probability_a = float(
-        0.70 * bundle["xgb"].predict_proba(features)[0, 1]
-        + 0.30 * bundle["logistic"].predict_proba(features)[0, 1]
+        xgb_weight * bundle["xgb"].predict_proba(features)[0, 1]
+        + logistic_weight * bundle["logistic"].predict_proba(features)[0, 1]
     )
     probability_a = float(np.clip(probability_a, 0.01, 0.99))
     probability_b = 1 - probability_a
