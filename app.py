@@ -186,6 +186,23 @@ live_key = st.secrets.get("LIVETENNISAPI_KEY", "")
 if not live_key:
     st.info("Connect your Live Tennis API key in Streamlit → App settings → Secrets as LIVETENNISAPI_KEY.")
 else:
+    if st.button("TEST RAPIDAPI CONNECTION", use_container_width=True):
+        try:
+            with st.spinner("Checking the RapidAPI live-events endpoint…"):
+                test_rows = fetch_rapid_live(st.secrets.get("TENNIS_RAPIDAPI_KEY", ""))
+            st.success(f"RapidAPI connection successful. The provider returned {len(test_rows)} live event(s).")
+            if not test_rows:
+                st.caption("An empty live list is valid when no matches are currently in play.")
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else "unknown"
+            detail = exc.response.text[:500] if exc.response is not None else ""
+            st.error(f"RapidAPI connection failed with HTTP {code}.")
+            if detail:
+                st.code(detail, language="text")
+        except requests.RequestException as exc:
+            st.error(f"RapidAPI connection failed: {exc}")
+        except (ValueError, TypeError) as exc:
+            st.error(f"RapidAPI returned an unexpected response: {exc}")
     live_tab, upcoming_tab = st.tabs(["🔴 Live now", "📅 Upcoming"])
     for tab, slate_status in [(live_tab, "live"), (upcoming_tab, "upcoming")]:
         with tab:
