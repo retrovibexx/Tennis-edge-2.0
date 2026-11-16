@@ -23,7 +23,10 @@ SURFACES = ("Hard", "Clay", "Grass", "Carpet")
 SURFACE_CODE = {name: i for i, name in enumerate(SURFACES)}
 FEATURES = [
     "elo_diff", "surface_elo_diff", "rank_advantage",
-    "form_diff", "experience_diff", "surface_code", "best_of"
+    "form_diff", "form5_diff", "experience_diff",
+    "h2h_diff", "rest_days_diff", "workload30_diff",
+    "serve_win_diff", "return_win_diff",
+    "surface_code", "best_of"
 ]
 
 
@@ -147,6 +150,8 @@ def build_training_data(files):
 
     elo, surface_elo, form, played = {}, {}, {}, {}
     names, ranks, ages = {}, {}, {}
+    last_played, match_dates, h2h = {}, {}, {}
+    serve_totals, return_totals = {}, {}
     feature_rows, labels, row_dates = [], [], []
 
     def rating(pid):
@@ -155,9 +160,20 @@ def build_training_data(files):
     def surface_rating(pid, surface):
         return surface_elo.get((pid, surface), 1500.0)
 
-    def recent_form(pid):
+    def recent_form(pid, count=10):
         values = form.get(pid, [])
-        return float(np.mean(values)) if values else 0.5
+        return float(np.mean(values[-count:])) if values else 0.5
+
+    def rate_gap(pid, store):
+        wins, total = store.get(pid, [0.0, 0.0])
+        return wins / total if total else 0.5
+
+    def days_since(pid, current_date):
+        previous = last_played.get(pid)
+        return min((current_date - previous).days, 30) if previous is not None else 7
+
+    def workload(pid, current_date):
+        return sum(1 for played_date in match_dates.get(pid, []) if 0 < (current_date - played_date).days <= 30)
 
     # Build every match's features from information available before that
     # calendar day. Apply that day's results only after all its rows are scored,
@@ -186,11 +202,17 @@ def build_training_data(files):
                 surface_rating(winner, surface) - surface_rating(loser, surface),
                 rank_advantage,
                 recent_form(winner) - recent_form(loser),
+                recent_form(winner, 5) - recent_form(loser, 5),
                 np.log1p(played.get(winner, 0)) - np.log1p(played.get(loser, 0)),
+                (h2h.get((winner, loser), 0) - h2h.get((loser, winner), 0)) / max(1, h2h.get((winner, loser), 0) + h2h.get((loser, winner), 0)),
+                days_since(loser, match_date) - days_since(winner, match_date),
+                workload(loser, match_date) - workload(winner, match_date),
+                rate_gap(winner, serve_totals) - rate_gap(loser, serve_totals),
+                rate_gap(winner, return_totals) - rate_gap(loser, return_totals),
                 SURFACE_CODE[surface],
                 best_of,
             ]
-            reverse = [-value if i < 5 else value for i, value in enumerate(features)]
+            reverse = [-value if i < 11 else value for i, value in enumerate(features)]
             feature_rows.extend([features, reverse])
             labels.extend([1, 0])
             row_dates.extend([match_date, match_date])
@@ -214,6 +236,28 @@ def build_training_data(files):
             form[winner], form[loser] = form[winner][-10:], form[loser][-10:]
             played[winner] = played.get(winner, 0) + 1
             played[loser] = played.get(loser, 0) + 1
+            h2h[(winner, loser)] = h2h.get((winner, loser), 0) + 1
+            for pid in (winner, loser):
+                last_played[pid] = match_date
+                match_dates.setdefault(pid, []).append(match_date)
+            # Historical match-box stats are accumulated only when present.
+            for pid, prefix in ((winner, "w"), (loser, "l")):
+                svpt = _number(row.get(f"{prefix}_svpt"))
+                first_in = _number(row.get(f"{prefix}_1stIn"))
+                first_won = _number(row.get(f"{prefix}_1stWon"))
+                second_won = _number(row.get(f"{prefix}_2ndWon"))
+                if np.isfinite(svpt) and svpt > 0 and np.isfinite(first_in) and np.isfinite(first_won) and np.isfinite(second_won):
+                    rate = (first_won + second_won) / svpt
+                    totals = serve_totals.setdefault(pid, [0.0, 0.0])
+                    totals[0] += rate
+                    totals[1] += 1
+            for pid, prefix in ((winner, "w"), (loser, "l")):
+                return_points_won = _number(row.get(f"{prefix}_return_points_won"))
+                return_points_total = _number(row.get(f"{prefix}_return_points_total"))
+                if np.isfinite(return_points_won) and np.isfinite(return_points_total) and return_points_total > 0:
+                    totals = return_totals.setdefault(pid, [0.0, 0.0])
+                    totals[0] += return_points_won / return_points_total
+                    totals[1] += 1
             winner_rank = _number(row.get("winner_rank"))
             loser_rank = _number(row.get("loser_rank"))
             if np.isfinite(winner_rank):
