@@ -17,6 +17,17 @@ FEATURES = [
 SURFACE_CODE = {"Hard": 0, "Clay": 1, "Grass": 2, "Carpet": 3}
 
 st.set_page_config(page_title="Tennis Edge AI", page_icon="🎾", layout="wide")
+
+# TENNIS EDGE NEON STADIUM THEME
+st.markdown("""<style># MainMenu{visibility:hidden}
+[data-testid="stAppViewContainer"]{background:radial-gradient(ellipse at 50% 75%,rgba(38,255,0,.2),transparent 26%),linear-gradient(180deg,rgba(1,7,7,.96),rgba(2,9,13,.78) 42%,rgba(1,8,7,.94)),linear-gradient(160deg,#020807,#17232b 54%,#06120b);background-attachment:fixed}
+[data-testid="stAppViewContainer"]::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.7;background:linear-gradient(180deg,transparent 52%,rgba(0,0,0,.5)),linear-gradient(90deg,transparent 9%,rgba(180,255,190,.13) 9.2%,transparent 9.5%,transparent 90%,rgba(180,255,190,.13) 90.2%,transparent 90.5%),linear-gradient(180deg,transparent 73%,rgba(160,255,170,.2) 73.2%,transparent 73.5%),radial-gradient(ellipse at 50% 58%,rgba(255,117,38,.16),transparent 36%)}
+[data-testid="stHeader"],[data-testid="stMain"]{background:transparent}
+.block-container{position:relative;z-index:1;padding-top:1.4rem}
+h1,h2,h3{color:#f5fff5!important;text-shadow:0 0 18px rgba(135,255,0,.26)}
+[data-testid="stMetric"],[data-testid="stExpander"],[data-testid="stVerticalBlockBorderWrapper"]{background:rgba(4,13,13,.86);border:1px solid rgba(145,255,50,.25);border-radius:16px}
+.stButton>button[kind="primary"]{background:linear-gradient(100deg,#8dff00,#c0ff42);color:#071000;border:0;font-weight:800;border-radius:12px;box-shadow:0 0 18px rgba(130,255,0,.34)}
+.stButton>button{border-radius:12px}</style>""", unsafe_allow_html=True)
 st.title("🎾 Tennis Edge AI")
 st.caption("Historical ATP/WTA match data • Estimated match-winner probabilities")
 
