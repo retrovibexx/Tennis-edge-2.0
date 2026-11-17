@@ -482,17 +482,19 @@ def simulate_tennis_matches(player_a, player_b, surface_name, match_format, simu
     """Vectorized point-by-point Monte Carlo simulation of best-of-3 or best-of-5 matches."""
     rng = np.random.default_rng(seed)
     # Blend each player's historical serve points won with the opponent's return points won.
-    def reliable_rate(value, fallback):
+    def reliable_rate(value, fallback, lower, upper):
         try:
             value = float(value)
-            return value if np.isfinite(value) and 0.54 <= value <= 0.82 else fallback
+            return value if np.isfinite(value) and lower <= value <= upper else fallback
         except (TypeError, ValueError):
             return fallback
 
-    serve_a = reliable_rate(player_a.get("serve_win_rate"), 0.62)
-    serve_b = reliable_rate(player_b.get("serve_win_rate"), 0.62)
-    return_a = reliable_rate(player_a.get("return_win_rate"), 0.38)
-    return_b = reliable_rate(player_b.get("return_win_rate"), 0.38)
+    serve_a = reliable_rate(player_a.get("serve_win_rate"), 0.62, 0.54, 0.82)
+    serve_b = reliable_rate(player_b.get("serve_win_rate"), 0.62, 0.54, 0.82)
+    # Neutral 0.50 placeholders are treated as missing; typical return-point
+    # win rates are lower than serve-point win rates.
+    return_a = reliable_rate(player_a.get("return_win_rate"), 0.38, 0.20, 0.47)
+    return_b = reliable_rate(player_b.get("return_win_rate"), 0.38, 0.20, 0.47)
     a_serve_probability = 0.65 * serve_a + 0.35 * (1.0 - return_b)
     b_serve_probability = 0.65 * serve_b + 0.35 * (1.0 - return_a)
 
