@@ -180,8 +180,8 @@ def build_training_data(files):
     # preventing same-day outcomes from leaking into later matches that day.
     for match_date, day_matches in matches.groupby("date", sort=True):
         day_updates = []
-        for match in day_matches.itertuples(index=False):
-            row = match._asdict()
+        for _, row in day_matches.iterrows():
+            row = row.to_dict()
             winner, loser, surface = str(row["winner_id"]), str(row["loser_id"]), row["surface"]
             names[winner] = str(row.get("winner_name", winner))
             names[loser] = str(row.get("loser_name", loser))
