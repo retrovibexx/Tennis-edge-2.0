@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import joblib
 import numpy as np
@@ -74,41 +75,65 @@ def download_weekly_matches():
     return path
 
 
+def _download_archive_year(tour, year):
+    """Fetch one tour/year with bounded timeouts; safe to run concurrently."""
+    path = DATA_DIR / f"{tour}_matches_{year}.csv"
+    if path.exists() and path.stat().st_size > 100:
+        return path
+    headers = {"User-Agent": "TennisEdgeAI/2.0 (historical research model)"}
+    for template in ARCHIVE_URLS:
+        url = template.format(tour=tour, year=year)
+        try:
+            response = requests.get(url, headers=headers, timeout=(5, 12))
+            if response.ok and "winner_id" in response.text[:5000]:
+                path.write_bytes(response.content)
+                return path
+        except requests.RequestException:
+            continue
+    return None
+
+
 def download_matches():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    session = requests.Session()
-    session.headers.update({"User-Agent": "TennisEdgeAI/2.0 (historical research model)"})
-    saved = []
     current_year = datetime.now(timezone.utc).year
-    for tour in ("atp", "wta"):
-        for year in range(2000, current_year + 1):
-            path = DATA_DIR / f"{tour}_matches_{year}.csv"
-            if path.exists() and path.stat().st_size > 100:
-                saved.append(path)
-                continue
-            for template in ARCHIVE_URLS:
-                url = template.format(tour=tour, year=year)
-                try:
-                    response = session.get(url, timeout=25)
-                    if response.ok and "winner_id" in response.text[:5000]:
-                        path.write_bytes(response.content)
-                        saved.append(path)
-                        break
-                except requests.RequestException:
-                    continue
+    jobs = [(tour, year) for tour in ("atp", "wta")
+            for year in range(2000, current_year + 1)]
+    saved = []
+    print(f"Checking {len(jobs)} ATP/WTA archive files using parallel downloads…", flush=True)
+    # The previous sequential downloader could wait up to 50 seconds per
+    # missing year. Bounded parallel requests keep a cold Streamlit start sane.
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = {pool.submit(_download_archive_year, tour, year): (tour, year)
+                   for tour, year in jobs}
+        completed = 0
+        for future in as_completed(futures):
+            completed += 1
+            try:
+                path = future.result()
+                if path is not None:
+                    saved.append(path)
+            except Exception as exc:
+                tour, year = futures[future]
+                print(f"Archive fetch failed for {tour} {year}: {exc}", flush=True)
+            if completed % 10 == 0 or completed == len(jobs):
+                print(f"Archive check: {completed}/{len(jobs)} years complete; {len(saved)} files available.", flush=True)
+
     try:
+        print("Checking weekly refreshed match feed…", flush=True)
         weekly_file = download_weekly_matches()
         saved.append(weekly_file)
-        print("Added latest weekly ATP/WTA match results.")
+        print("Added latest weekly ATP/WTA match results.", flush=True)
     except Exception as exc:
-        print(f"Weekly feed unavailable; continuing with archive data: {exc}")
+        print(f"Weekly feed unavailable; continuing with archive data: {exc}", flush=True)
 
     if not saved:
         raise RuntimeError(
             "Could not download historical or weekly tennis match data. "
             "Check network access and the upstream data sources, then reload."
         )
+    print(f"Data download complete: {len(saved)} files ready for training.", flush=True)
     return saved
+
 
 def _number(value, default=np.nan):
     try:
@@ -419,10 +444,10 @@ def build_training_data(files):
 
 def _new_models():
     xgb = XGBClassifier(
-        n_estimators=400, max_depth=3, learning_rate=0.03,
+        n_estimators=220, max_depth=3, learning_rate=0.03,
         subsample=0.85, colsample_bytree=0.85, reg_lambda=5,
         min_child_weight=8, objective="binary:logistic",
-        eval_metric="logloss", random_state=42, n_jobs=-1,
+        eval_metric="logloss", random_state=42, n_jobs=2,
     )
     logistic = make_pipeline(
         StandardScaler(),
