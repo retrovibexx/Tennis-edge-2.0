@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime, timezone
 import json
+import re
+import unicodedata
 import requests
 import joblib
 import numpy as np
@@ -158,14 +160,26 @@ def build_training_data(files):
 
     elo, surface_elo, surface_matches, form, played = {}, {}, {}, {}, {}
     names, ranks, ages = {}, {}, {}
+    identity_audit = {"name_key_collisions": 0, "invalid_player_rows": 0}
+    name_key_to_ids = {}
     last_played, match_dates, h2h = {}, {}, {}
     h2h_history = {}
+    quality_form = {}
     played_since_return = {}
     serve_totals, return_totals = {}, {}
     feature_rows, labels, row_dates = [], [], []
 
     def rating(pid):
         return elo.get(pid, 1500.0)
+
+    def canonical_name(value):
+        value = unicodedata.normalize("NFKD", str(value))
+        value = "".join(ch for ch in value if not unicodedata.combining(ch))
+        return re.sub(r"[^a-z0-9]", "", value.casefold())
+    
+    def quality_recent_form(pid, count=10):
+        values = quality_form.get(pid, [])
+        return float(np.mean(values[-count:])) if values else 0.5
 
     def surface_rating(pid, surface):
         # Shrink small-sample surface ratings toward overall Elo.
@@ -221,9 +235,18 @@ def build_training_data(files):
         day_updates = []
         for _, row in day_matches.iterrows():
             row = row.to_dict()
-            winner, loser, surface = str(row["winner_id"]), str(row["loser_id"]), row["surface"]
-            names[winner] = str(row.get("winner_name", winner))
-            names[loser] = str(row.get("loser_name", loser))
+            winner, loser, surface = str(row["winner_id"]).strip(), str(row["loser_id"]).strip(), row["surface"]
+            winner_name = str(row.get("winner_name", winner)).strip()
+            loser_name = str(row.get("loser_name", loser)).strip()
+            if not winner or not loser or winner.casefold() == "nan" or loser.casefold() == "nan":
+                identity_audit["invalid_player_rows"] += 1
+                continue
+            names[winner] = winner_name
+            names[loser] = loser_name
+            for pid, pname in ((winner, winner_name), (loser, loser_name)):
+                key = canonical_name(pname)
+                if key:
+                    name_key_to_ids.setdefault(key, set()).add(pid)
 
             winner_rank = _number(row.get("winner_rank"))
             loser_rank = _number(row.get("loser_rank"))
@@ -240,8 +263,8 @@ def build_training_data(files):
                 rating(winner) - rating(loser),
                 surface_rating(winner, surface) - surface_rating(loser, surface),
                 rank_advantage,
-                recent_form(winner) - recent_form(loser),
-                recent_form(winner, 5) - recent_form(loser, 5),
+                quality_recent_form(winner) - quality_recent_form(loser),
+                quality_recent_form(winner, 5) - quality_recent_form(loser, 5),
                 np.log1p(played.get(winner, 0)) - np.log1p(played.get(loser, 0)),
                 h2h_score(winner, loser, match_date, surface),
                 days_since(loser, match_date) - days_since(winner, match_date),
@@ -273,7 +296,8 @@ def build_training_data(files):
                             if key in surface_elo:
                                 surface_elo[key] = 1500.0 + (surface_elo[key] - 1500.0) * (1.0 - decay)
 
-            expected_winner = 1 / (1 + 10 ** ((rating(loser) - rating(winner)) / 400))
+            pre_rating_winner, pre_rating_loser = rating(winner), rating(loser)
+            expected_winner = 1 / (1 + 10 ** ((pre_rating_loser - pre_rating_winner) / 400))
             expected_surface = 1 / (
                 1 + 10 ** ((surface_rating(loser, surface) - surface_rating(winner, surface)) / 400)
             )
@@ -299,6 +323,11 @@ def build_training_data(files):
             surface_matches[(winner, surface)] = surface_matches.get((winner, surface), 0) + 1
             surface_matches[(loser, surface)] = surface_matches.get((loser, surface), 0) + 1
 
+            # Strength-adjusted recent form: beating a stronger opponent
+            # earns more credit than beating a much lower-rated opponent.
+            quality_form.setdefault(winner, []).append(float(np.clip(0.5 + 0.5 * (1.0 - expected_winner), 0.0, 1.0)))
+            quality_form.setdefault(loser, []).append(float(np.clip(0.5 + 0.5 * (0.0 - (1.0 - expected_winner)), 0.0, 1.0)))
+            quality_form[winner], quality_form[loser] = quality_form[winner][-10:], quality_form[loser][-10:]
             for pid in (winner, loser):
                 played_since_return[pid] = played_since_return.get(pid, 10) + 1
             form.setdefault(winner, []).append(1.0)
@@ -349,8 +378,10 @@ def build_training_data(files):
             "surface_elo": {s: float(surface_rating(pid, s)) for s in SURFACES},
             "surface_elo_matches": {s: int(surface_matches.get((pid, s), 0)) for s in SURFACES},
             "form10": recent_form(pid),
-            "post_layoff_matches": int(played_since_return.get(pid, 0)),
             "form5": recent_form(pid, 5),
+            "quality_form10": quality_recent_form(pid),
+            "quality_form5": quality_recent_form(pid, 5),
+            "post_layoff_matches": int(played_since_return.get(pid, 0)),
             "serve_win_rate": rate_gap(pid, serve_totals),
             "return_win_rate": rate_gap(pid, return_totals),
             "h2h": {opponent: int(wins) for (player, opponent), wins in h2h.items() if player == pid},
@@ -382,6 +413,8 @@ def build_training_data(files):
     X = pd.DataFrame(feature_rows, columns=FEATURES).replace([np.inf, -np.inf], 0).fillna(0)
     y = np.asarray(labels, dtype=np.int8)
     dates = pd.DatetimeIndex(row_dates)
+    identity_audit["name_key_collisions"] = int(sum(1 for ids in name_key_to_ids.values() if len(ids) > 1))
+    player_state["_data_quality"] = identity_audit
     return X, y, dates, player_state, len(matches)
 
 def _new_models():
@@ -396,6 +429,25 @@ def _new_models():
         LogisticRegression(C=0.35, max_iter=2000, random_state=42),
     )
     return xgb, logistic
+
+
+def _calibration_bins(y_true, probabilities, bins=10):
+    y_true = np.asarray(y_true, dtype=float)
+    probabilities = np.asarray(probabilities, dtype=float)
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    rows = []
+    for index in range(bins):
+        mask = (probabilities >= edges[index]) & (
+            probabilities < edges[index + 1] if index < bins - 1 else probabilities <= edges[index + 1]
+        )
+        if mask.any():
+            rows.append({
+                "range": f"{edges[index]:.1f}-{edges[index + 1]:.1f}",
+                "count": int(mask.sum()),
+                "mean_predicted": float(probabilities[mask].mean()),
+                "observed_win_rate": float(y_true[mask].mean()),
+            })
+    return rows
 
 
 def _score(y_true, probabilities):
@@ -481,6 +533,8 @@ def main():
         "logistic_test": _score(y[test_mask], logistic_test),
         "selected_blend_test": _score(y[test_mask], blended_test),
         "calibrated_blend_test": _score(y[test_mask], calibrated_test),
+        "calibration_reliability_bins": _calibration_bins(y[test_mask], calibrated_test),
+        "data_quality": players.get("_data_quality", {}),
         "selected_xgboost_weight": xgb_weight,
         "validation_selected_weight_only": True,
     }
