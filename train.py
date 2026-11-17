@@ -133,9 +133,17 @@ def build_training_data(files):
         matches["tourney_date"].astype(str), format="%Y%m%d", errors="coerce"
     )
     matches = matches.dropna(subset=["date", "winner_id", "loser_id"])
-    identity = [c for c in ("date", "winner_name", "loser_name") if c in matches.columns]
-    if len(identity) == 3:
-        matches = matches.drop_duplicates(subset=identity, keep="last")
+    # Canonicalize player keys before deduplication so archive/feed duplicates
+    # and harmless name-format differences do not fragment head-to-head records.
+    if {"winner_name", "loser_name"}.issubset(matches.columns):
+        matches["winner_id"] = matches["winner_name"].where(matches["winner_name"].notna(), matches["winner_id"]).astype(str).str.strip()
+        matches["loser_id"] = matches["loser_name"].where(matches["loser_name"].notna(), matches["loser_id"]).astype(str).str.strip()
+    else:
+        matches["winner_id"] = matches["winner_id"].astype(str).str.strip()
+        matches["loser_id"] = matches["loser_id"].astype(str).str.strip()
+    matches["_winner_key"] = matches["winner_id"].str.casefold().str.replace(r"[^a-z0-9]", "", regex=True)
+    matches["_loser_key"] = matches["loser_id"].str.casefold().str.replace(r"[^a-z0-9]", "", regex=True)
+    matches = matches.drop_duplicates(subset=["date", "_winner_key", "_loser_key"], keep="last")
     # The weekly feed uses different player IDs than the archived Sackmann
     # CSVs. Use the consistent player-name fields as keys across both sources.
     if {"winner_name", "loser_name"}.issubset(matches.columns):
@@ -151,6 +159,7 @@ def build_training_data(files):
     elo, surface_elo, surface_matches, form, played = {}, {}, {}, {}, {}
     names, ranks, ages = {}, {}, {}
     last_played, match_dates, h2h = {}, {}, {}
+    h2h_history = {}
     played_since_return = {}
     serve_totals, return_totals = {}, {}
     feature_rows, labels, row_dates = [], [], []
@@ -169,6 +178,26 @@ def build_training_data(files):
     def form_multiplier(winner, loser):
         gap = recent_form(winner, 5) - recent_form(loser, 5)
         return float(np.clip(1.0 + 0.35 * gap, 0.80, 1.20))
+
+    def h2h_score(player, opponent, current_date, surface=None):
+        # Exponential two-year half-life; same-surface meetings receive a
+        # modest boost. Four pseudo-meetings shrink tiny samples toward zero.
+        records = h2h_history.get((player, opponent), [])
+        weighted_wins = weighted_losses = 0.0
+        for played_date, played_surface in records:
+            age_days = max(0, (current_date - played_date).days)
+            weight = 0.5 ** (age_days / 730.0)
+            if surface and played_surface == surface:
+                weight *= 1.25
+            weighted_wins += weight
+        reverse_records = h2h_history.get((opponent, player), [])
+        for played_date, played_surface in reverse_records:
+            age_days = max(0, (current_date - played_date).days)
+            weight = 0.5 ** (age_days / 730.0)
+            if surface and played_surface == surface:
+                weight *= 1.25
+            weighted_losses += weight
+        return (weighted_wins - weighted_losses) / (weighted_wins + weighted_losses + 4.0)
 
     def recent_form(pid, count=10):
         values = form.get(pid, [])
@@ -214,7 +243,7 @@ def build_training_data(files):
                 recent_form(winner) - recent_form(loser),
                 recent_form(winner, 5) - recent_form(loser, 5),
                 np.log1p(played.get(winner, 0)) - np.log1p(played.get(loser, 0)),
-                (h2h.get((winner, loser), 0) - h2h.get((loser, winner), 0)) / max(1, h2h.get((winner, loser), 0) + h2h.get((loser, winner), 0)),
+                h2h_score(winner, loser, match_date, surface),
                 days_since(loser, match_date) - days_since(winner, match_date),
                 workload(loser, match_date) - workload(winner, match_date),
                 rate_gap(winner, serve_totals) - rate_gap(loser, serve_totals),
@@ -278,6 +307,7 @@ def build_training_data(files):
             played[winner] = played.get(winner, 0) + 1
             played[loser] = played.get(loser, 0) + 1
             h2h[(winner, loser)] = h2h.get((winner, loser), 0) + 1
+            h2h_history.setdefault((winner, loser), []).append((match_date, surface))
             for pid in (winner, loser):
                 last_played[pid] = match_date
                 match_dates.setdefault(pid, []).append(match_date)
@@ -324,6 +354,17 @@ def build_training_data(files):
             "serve_win_rate": rate_gap(pid, serve_totals),
             "return_win_rate": rate_gap(pid, return_totals),
             "h2h": {opponent: int(wins) for (player, opponent), wins in h2h.items() if player == pid},
+            "h2h_weighted": {
+                opponent: float(h2h_score(pid, opponent, matches["date"].max(), None))
+                for opponent in set(other for (player, other) in h2h_history if player == pid)
+            },
+            "h2h_counts": {
+                opponent: {
+                    "wins": int(h2h.get((pid, opponent), 0)),
+                    "losses": int(h2h.get((opponent, pid), 0)),
+                }
+                for opponent in set(other for pair in h2h_history for other in pair if pid in pair and other != pid)
+            },
             "last_played": last_played.get(pid).isoformat() if pid in last_played else None,
             "workload30": int(sum(1 for d in match_dates.get(pid, []) if (matches["date"].max() - d).days <= 30)),
             "matches": int(played.get(pid, 0)),
