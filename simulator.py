@@ -73,7 +73,6 @@ def simulate_tennis_matches(player_a, player_b, surface_name, match_format,
             tb_done = ~tied_for_tiebreak.copy()
             point_number = np.zeros(n, dtype=np.int16)
             while np.any(~tb_done):
-                switch = ((point_number > 0) & (((point_number - 1) // 2) % 2 == 0)) | ((point_number >= 3) & (((point_number - 1) // 2) % 2 == 1))
                 # Explicit sequence: first server for point 1, then other server
                 # for points 2-3, first for 4-5, and so on.
                 switch = np.where(point_number == 0, False, ((point_number + 1) // 2) % 2 == 1)
@@ -118,6 +117,6 @@ def simulate_tennis_matches(player_a, player_b, surface_name, match_format,
         "probability_b": float((~won_a).mean()),
         "score_distribution": distribution,
         "serve_probability_a": p_a_on_a_serve,
-        "serve_probability_b": p_b_serve,
+        "serve_probability_b": float(1.0 - p_a_on_b_serve),
         "assumptions": "Standard advantage games; 7-point tiebreak at 6-6 in every set; randomized first server.",
     }
