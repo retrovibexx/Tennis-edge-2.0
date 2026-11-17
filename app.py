@@ -638,10 +638,17 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
 
     xgb_weight = float(bundle.get("xgb_weight", 0.70))
     logistic_weight = 1.0 - xgb_weight
-    probability_a = float(
+    raw_probability_a = float(
         xgb_weight * bundle["xgb"].predict_proba(features)[0, 1]
         + logistic_weight * bundle["logistic"].predict_proba(features)[0, 1]
     )
+    calibrator = bundle.get("calibrator")
+    if calibrator is not None:
+        clipped_raw = float(np.clip(raw_probability_a, 1e-6, 1 - 1e-6))
+        raw_logit = np.log(clipped_raw / (1 - clipped_raw)).reshape(1, 1)
+        probability_a = float(calibrator.predict_proba(raw_logit)[0, 1])
+    else:
+        probability_a = raw_probability_a
     probability_a = float(np.clip(probability_a, 0.01, 0.99))
     probability_b = 1 - probability_a
     market_a = (1 / odds_a) / ((1 / odds_a) + (1 / odds_b))
@@ -649,7 +656,7 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
     edge_a, edge_b = probability_a - market_a, probability_b - market_b
     ev_a, ev_b = probability_a * odds_a - 1, probability_b * odds_b - 1
 
-    st.subheader("Estimated win probabilities")
+    st.subheader("Calibrated estimated win probabilities")
     col_a, col_b = st.columns(2)
     col_a.metric(player_a_name, f"{probability_a:.1%}")
     col_b.metric(player_b_name, f"{probability_b:.1%}")
