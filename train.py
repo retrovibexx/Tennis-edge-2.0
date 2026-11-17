@@ -350,6 +350,15 @@ def main():
         blended = weight * xgb_val + (1.0 - weight) * logistic_val
         validation_losses.append(log_loss(y[validation_mask], np.clip(blended, 1e-6, 1 - 1e-6)))
     xgb_weight = float(candidate_weights[int(np.argmin(validation_losses))])
+    validation_blend = xgb_weight * xgb_val + (1.0 - xgb_weight) * logistic_val
+    # Fit a one-dimensional probability calibrator using validation predictions only.
+    # The untouched test period remains reserved for final evaluation.
+    validation_logit = np.log(
+        np.clip(validation_blend, 1e-6, 1 - 1e-6)
+        / (1 - np.clip(validation_blend, 1e-6, 1 - 1e-6))
+    ).reshape(-1, 1)
+    calibrator = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
+    calibrator.fit(validation_logit, y[validation_mask])
 
     # Refit on train + validation, then evaluate exactly once on the held-out
     # most-recent period.
@@ -360,6 +369,11 @@ def main():
     xgb_test = final_xgb.predict_proba(X.loc[test_mask])[:, 1]
     logistic_test = final_logistic.predict_proba(X.loc[test_mask])[:, 1]
     blended_test = xgb_weight * xgb_test + (1.0 - xgb_weight) * logistic_test
+    blended_test_logit = np.log(
+        np.clip(blended_test, 1e-6, 1 - 1e-6)
+        / (1 - np.clip(blended_test, 1e-6, 1 - 1e-6))
+    ).reshape(-1, 1)
+    calibrated_test = calibrator.predict_proba(blended_test_logit)[:, 1]
 
     metrics = {
         "evaluation_method": "Chronological 70% train / 15% validation / 15% untouched test by calendar date",
@@ -375,6 +389,7 @@ def main():
         "xgboost_test": _score(y[test_mask], xgb_test),
         "logistic_test": _score(y[test_mask], logistic_test),
         "selected_blend_test": _score(y[test_mask], blended_test),
+        "calibrated_blend_test": _score(y[test_mask], calibrated_test),
         "selected_xgboost_weight": xgb_weight,
         "validation_selected_weight_only": True,
     }
