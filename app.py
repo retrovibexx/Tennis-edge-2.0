@@ -477,6 +477,133 @@ for quote in st.session_state.get("dk_lookup_quotes", []):
 odds_a = st.number_input("Player A decimal odds", min_value=1.01, value=1.80, step=0.01, key="odds_a_v2")
 odds_b = st.number_input("Player B decimal odds", min_value=1.01, value=2.10, step=0.01, key="odds_b_v2")
 
+
+def simulate_tennis_matches(player_a, player_b, surface_name, match_format, simulations=5000, seed=42):
+    """Vectorized point-by-point Monte Carlo simulation of best-of-3 or best-of-5 matches."""
+    rng = np.random.default_rng(seed)
+    # Blend each player's historical serve points won with the opponent's return points won.
+    def reliable_rate(value, fallback):
+        try:
+            value = float(value)
+            return value if np.isfinite(value) and 0.54 <= value <= 0.82 else fallback
+        except (TypeError, ValueError):
+            return fallback
+
+    serve_a = reliable_rate(player_a.get("serve_win_rate"), 0.62)
+    serve_b = reliable_rate(player_b.get("serve_win_rate"), 0.62)
+    return_a = reliable_rate(player_a.get("return_win_rate"), 0.38)
+    return_b = reliable_rate(player_b.get("return_win_rate"), 0.38)
+    a_serve_probability = 0.65 * serve_a + 0.35 * (1.0 - return_b)
+    b_serve_probability = 0.65 * serve_b + 0.35 * (1.0 - return_a)
+
+    # Small rating adjustment, deliberately capped so serve/return and court
+    # performance remain the main point-level drivers.
+    elo_delta = (
+        float(player_a.get("elo", 1500)) - float(player_b.get("elo", 1500))
+        + float(player_a.get("surface_elo", {}).get(surface_name, 1500))
+        - float(player_b.get("surface_elo", {}).get(surface_name, 1500))
+    )
+    rating_adjustment = float(np.clip(elo_delta / 4000.0, -0.035, 0.035))
+    p_a_on_a_serve = float(np.clip(a_serve_probability + rating_adjustment, 0.52, 0.82))
+    p_a_on_b_serve = float(np.clip(1.0 - b_serve_probability + rating_adjustment, 0.18, 0.48))
+
+    sets_needed = match_format // 2 + 1
+    sets_a = np.zeros(simulations, dtype=np.int8)
+    sets_b = np.zeros(simulations, dtype=np.int8)
+    games_a = np.zeros(simulations, dtype=np.int8)
+    games_b = np.zeros(simulations, dtype=np.int8)
+    points_a = np.zeros(simulations, dtype=np.int16)
+    points_b = np.zeros(simulations, dtype=np.int16)
+    tiebreak_points = np.zeros(simulations, dtype=np.int16)
+    total_games = np.zeros(simulations, dtype=np.int16)
+    scorelines = []
+
+    while np.any((sets_a < sets_needed) & (sets_b < sets_needed)):
+        active = (sets_a < sets_needed) & (sets_b < sets_needed)
+        tiebreak = active & (games_a == 6) & (games_b == 6)
+        first_server_a = (total_games % 2) == 0
+        tb_switch = ((tiebreak_points + 1) // 2) % 2 == 1
+        tb_server_a = np.logical_xor(first_server_a, tb_switch)
+        server_a = np.where(tiebreak, tb_server_a, first_server_a)
+        p_a = np.where(server_a, p_a_on_a_serve, p_a_on_b_serve)
+        point_a_wins = rng.random(simulations) < p_a
+        points_a += (active & point_a_wins).astype(np.int16)
+        points_b += (active & ~point_a_wins).astype(np.int16)
+        tiebreak_points += (tiebreak & active).astype(np.int16)
+
+        tb_a_wins = tiebreak & (points_a >= 7) & ((points_a - points_b) >= 2)
+        tb_b_wins = tiebreak & (points_b >= 7) & ((points_b - points_a) >= 2)
+        game_a_wins = (~tiebreak) & (points_a >= 4) & ((points_a - points_b) >= 2)
+        game_b_wins = (~tiebreak) & (points_b >= 4) & ((points_b - points_a) >= 2)
+        games_a += (game_a_wins | tb_a_wins).astype(np.int8)
+        games_b += (game_b_wins | tb_b_wins).astype(np.int8)
+        completed_game = game_a_wins | game_b_wins | tb_a_wins | tb_b_wins
+        total_games += completed_game.astype(np.int16)
+        points_a[completed_game] = 0
+        points_b[completed_game] = 0
+        tiebreak_points[completed_game] = 0
+
+        set_a_wins = active & ((games_a >= 6) & ((games_a - games_b) >= 2) | tb_a_wins)
+        set_b_wins = active & ((games_b >= 6) & ((games_b - games_a) >= 2) | tb_b_wins)
+        sets_a += set_a_wins.astype(np.int8)
+        sets_b += set_b_wins.astype(np.int8)
+        set_finished = set_a_wins | set_b_wins
+        games_a[set_finished] = 0
+        games_b[set_finished] = 0
+
+    wins_a = sets_a > sets_b
+    wins_b = ~wins_a
+    for x, y in zip(sets_a.tolist(), sets_b.tolist()):
+        scorelines.append(f"{x}-{y}")
+    unique, counts = np.unique(scorelines, return_counts=True)
+    score_distribution = sorted(
+        [(str(score), int(count)) for score, count in zip(unique, counts)],
+        key=lambda item: item[1], reverse=True
+    )
+    return {
+        "wins_a": int(wins_a.sum()),
+        "wins_b": int(wins_b.sum()),
+        "probability_a": float(wins_a.mean()),
+        "probability_b": float(wins_b.mean()),
+        "score_distribution": score_distribution,
+        "serve_probability_a": p_a_on_a_serve,
+        "serve_probability_b": b_serve_probability,
+    }
+
+
+st.subheader("🎾 Head-to-Head Match Simulator")
+st.caption("Run virtual point-by-point matches using each player's stored serve/return profile, overall Elo, surface Elo, and selected match format.")
+simulation_count = st.selectbox("Number of simulated matches", [1000, 5000, 10000], index=1, key="simulation_count_v1")
+if st.button("▶ SIMULATE MATCHES", type="primary", use_container_width=True, disabled=not bool(player_a_name and player_b_name)):
+    if player_a_name == player_b_name:
+        st.error("Choose two different players.")
+    else:
+        sim_a = get_player(player_a_name)
+        sim_b = get_player(player_b_name)
+        with st.spinner(f"Simulating {simulation_count:,} virtual matches…"):
+            simulation = simulate_tennis_matches(
+                sim_a, sim_b, surface, best_of, simulations=int(simulation_count)
+            )
+        st.session_state["last_match_simulation"] = {
+            "player_a": player_a_name, "player_b": player_b_name,
+            "surface": surface, "best_of": best_of,
+            "count": int(simulation_count), "result": simulation,
+        }
+
+last_simulation = st.session_state.get("last_match_simulation")
+if last_simulation and last_simulation.get("player_a") == player_a_name and last_simulation.get("player_b") == player_b_name and last_simulation.get("surface") == surface and last_simulation.get("best_of") == best_of:
+    sim_result = last_simulation["result"]
+    st.markdown(f"**Results from {last_simulation['count']:,} simulated best-of-{best_of} matches**")
+    sim_col_a, sim_col_b = st.columns(2)
+    sim_col_a.metric(player_a_name, f"{sim_result['probability_a']:.1%}", f"{sim_result['wins_a']:,} wins")
+    sim_col_b.metric(player_b_name, f"{sim_result['probability_b']:.1%}", f"{sim_result['wins_b']:,} wins")
+    st.write("**Most common final set scores**")
+    st.dataframe(
+        pd.DataFrame(sim_result["score_distribution"][:5], columns=["Final set score", "Simulations"]),
+        use_container_width=True, hide_index=True
+    )
+    st.caption("This is a statistical simulation, not a live match or a guarantee. Missing/neutral serve and return statistics use conservative baseline assumptions.")
+
 if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
     if not player_a_name or not player_b_name:
         st.error("Search for and select two players first.")
