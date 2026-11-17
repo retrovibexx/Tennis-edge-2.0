@@ -529,6 +529,18 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
     a, b = get_player(player_a_name), get_player(player_b_name)
     rank_a = a.get("rank") if a.get("rank") and a["rank"] > 0 else 300
     rank_b = b.get("rank") if b.get("rank") and b["rank"] > 0 else 300
+    player_a_id, player_b_id = get_player_id(player_a_name), get_player_id(player_b_name)
+    a_h2h = a.get("h2h_counts", {}).get(player_b_id, {})
+    b_h2h = b.get("h2h_counts", {}).get(player_a_id, {})
+    a_h2h_wins = int(a_h2h.get("wins", a.get("h2h", {}).get(player_b_id, 0)))
+    b_h2h_wins = int(b_h2h.get("wins", b.get("h2h", {}).get(player_a_id, 0)))
+    h2h_total = a_h2h_wins + b_h2h_wins
+    st.subheader("Head-to-head record")
+    if h2h_total:
+        st.write(f"**{player_a_name}: {a_h2h_wins} wins — {player_b_name}: {b_h2h_wins} wins** ({h2h_total} recorded meetings)")
+        st.caption("H2H model input is recency-weighted with a two-year half-life and shrunk toward neutral for small samples. The displayed record is the raw historical count.")
+    else:
+        st.info("No verified head-to-head meetings found in the loaded match history. H2H is treated as neutral.")
     features = pd.DataFrame([[
         a["elo"] - b["elo"],
         a["surface_elo"].get(surface, 1500) - b["surface_elo"].get(surface, 1500),
@@ -536,7 +548,7 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
         a["form10"] - b["form10"],
         a.get("form5", a["form10"]) - b.get("form5", b["form10"]),
         np.log1p(a["matches"]) - np.log1p(b["matches"]),
-        (a.get("h2h", {}).get(get_player_id(player_b_name), 0) - b.get("h2h", {}).get(get_player_id(player_a_name), 0)) / max(1, a.get("h2h", {}).get(get_player_id(player_b_name), 0) + b.get("h2h", {}).get(get_player_id(player_a_name), 0)),
+        float(a.get("h2h_weighted", {}).get(get_player_id(player_b_name), 0.0)) - float(b.get("h2h_weighted", {}).get(get_player_id(player_a_name), 0.0)),
         (pd.Timestamp(a["last_played"]) - pd.Timestamp(b["last_played"])).days if a.get("last_played") and b.get("last_played") else 0.0,
         float(b.get("workload30", 0)) - float(a.get("workload30", 0)),
         a.get("serve_win_rate", 0.5) - b.get("serve_win_rate", 0.5),
