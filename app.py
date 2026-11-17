@@ -102,6 +102,9 @@ def get_player(name):
     return max((players[pid] for pid in name_to_ids[name]),
                key=lambda record: record.get("matches", 0))
 
+def get_player_id(name):
+    return max(name_to_ids[name], key=lambda pid: players[pid].get("matches", 0))
+
 # LIVE MATCH CENTER — separate from the historical training data
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_live_slate(status, api_key):
@@ -624,7 +627,7 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
         a["form10"] - b["form10"],
         a.get("form5", a["form10"]) - b.get("form5", b["form10"]),
         np.log1p(a["matches"]) - np.log1p(b["matches"]),
-        0.0,  # pair-specific head-to-head will be added when matchup history is persisted
+        (a.get("h2h", {}).get(get_player_id(player_b_name), 0) - b.get("h2h", {}).get(get_player_id(player_a_name), 0)) / max(1, a.get("h2h", {}).get(get_player_id(player_b_name), 0) + b.get("h2h", {}).get(get_player_id(player_a_name), 0)),
         (pd.Timestamp(a["last_played"]) - pd.Timestamp(b["last_played"])).days if a.get("last_played") and b.get("last_played") else 0.0,
         float(b.get("workload30", 0)) - float(a.get("workload30", 0)),
         a.get("serve_win_rate", 0.5) - b.get("serve_win_rate", 0.5),
