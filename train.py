@@ -280,6 +280,7 @@ def build_training_data(files):
             "form5": recent_form(pid, 5),
             "serve_win_rate": rate_gap(pid, serve_totals),
             "return_win_rate": rate_gap(pid, return_totals),
+            "h2h": {opponent: int(wins) for (player, opponent), wins in h2h.items() if player == pid},
             "last_played": last_played.get(pid).isoformat() if pid in last_played else None,
             "workload30": int(sum(1 for d in match_dates.get(pid, []) if (matches["date"].max() - d).days <= 30)),
             "matches": int(played.get(pid, 0)),
