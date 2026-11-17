@@ -148,9 +148,10 @@ def build_training_data(files):
     matches["surface"] = matches["surface"].fillna("Hard").astype(str).str.title()
     matches = matches[matches["surface"].isin(SURFACES)].sort_values("date")
 
-    elo, surface_elo, form, played = {}, {}, {}, {}
+    elo, surface_elo, surface_matches, form, played = {}, {}, {}, {}, {}
     names, ranks, ages = {}, {}, {}
     last_played, match_dates, h2h = {}, {}, {}
+    played_since_return = {}
     serve_totals, return_totals = {}, {}
     feature_rows, labels, row_dates = [], [], []
 
@@ -158,7 +159,16 @@ def build_training_data(files):
         return elo.get(pid, 1500.0)
 
     def surface_rating(pid, surface):
-        return surface_elo.get((pid, surface), 1500.0)
+        # Shrink small-sample surface ratings toward overall Elo.
+        overall = rating(pid)
+        raw = surface_elo.get((pid, surface), 1500.0)
+        count = surface_matches.get((pid, surface), 0)
+        reliability = count / (count + 20.0)
+        return overall + reliability * (raw - overall)
+
+    def form_multiplier(winner, loser):
+        gap = recent_form(winner, 5) - recent_form(loser, 5)
+        return float(np.clip(1.0 + 0.35 * gap, 0.80, 1.20))
 
     def recent_form(pid, count=10):
         values = form.get(pid, [])
@@ -220,17 +230,43 @@ def build_training_data(files):
 
         # Update ratings/form only after all matches on this date have features.
         for row, winner, loser, surface in day_updates:
+            # Decay inactive ratings toward 1500 by 1.5% per idle week,
+            # capped at 18%, when the player returns to competition.
+            for pid in (winner, loser):
+                previous = last_played.get(pid)
+                if previous is not None:
+                    idle_weeks = max(0, (match_date - previous).days // 7)
+                    decay = min(idle_weeks * 0.015, 0.18)
+                    if decay:
+                        elo[pid] = 1500.0 + (rating(pid) - 1500.0) * (1.0 - decay)
+                        for surf in SURFACES:
+                            key = (pid, surf)
+                            if key in surface_elo:
+                                surface_elo[key] = 1500.0 + (surface_elo[key] - 1500.0) * (1.0 - decay)
+
             expected_winner = 1 / (1 + 10 ** ((rating(loser) - rating(winner)) / 400))
             expected_surface = 1 / (
                 1 + 10 ** ((surface_rating(loser, surface) - surface_rating(winner, surface)) / 400)
             )
             level = str(row.get("tourney_level", "A"))
-            k_factor = 40 if level == "G" else 32 if level in ("M", "F") else 24
-            elo[winner] = rating(winner) + k_factor * (1 - expected_winner)
-            elo[loser] = rating(loser) - k_factor * (1 - expected_winner)
-            surface_elo[(winner, surface)] = surface_rating(winner, surface) + k_factor * (1 - expected_surface)
-            surface_elo[(loser, surface)] = surface_rating(loser, surface) - k_factor * (1 - expected_surface)
+            base_k = 40 if level == "G" else 32 if level in ("M", "F") else 24
+            shared_k = base_k * form_multiplier(winner, loser)
+            k_winner = shared_k * (1.50 if played_since_return.get(winner, 10) < 5 else 1.25 if played_since_return.get(winner, 10) < 10 else 1.0)
+            k_loser = shared_k * (1.50 if played_since_return.get(loser, 10) < 5 else 1.25 if played_since_return.get(loser, 10) < 10 else 1.0)
+            elo[winner] = rating(winner) + k_winner * (1 - expected_winner)
+            elo[loser] = rating(loser) - k_loser * (1 - expected_winner)
+            raw_winner = surface_elo.get((winner, surface), 1500.0)
+            raw_loser = surface_elo.get((loser, surface), 1500.0)
+            surface_elo[(winner, surface)] = raw_winner + k_winner * (1 - expected_surface)
+            surface_elo[(loser, surface)] = raw_loser - k_loser * (1 - expected_surface)
+            surface_matches[(winner, surface)] = surface_matches.get((winner, surface), 0) + 1
+            surface_matches[(loser, surface)] = surface_matches.get((loser, surface), 0) + 1
 
+            for pid in (winner, loser):
+                previous = last_played.get(pid)
+                if previous is None or (match_date - previous).days >= 21:
+                    played_since_return[pid] = 0
+                played_since_return[pid] = played_since_return.get(pid, 0) + 1
             form.setdefault(winner, []).append(1.0)
             form.setdefault(loser, []).append(0.0)
             form[winner], form[loser] = form[winner][-10:], form[loser][-10:]
@@ -276,7 +312,9 @@ def build_training_data(files):
             "name": names.get(pid, pid),
             "elo": float(value),
             "surface_elo": {s: float(surface_rating(pid, s)) for s in SURFACES},
+            "surface_elo_matches": {s: int(surface_matches.get((pid, s), 0)) for s in SURFACES},
             "form10": recent_form(pid),
+            "post_layoff_matches": int(played_since_return.get(pid, 0)),
             "form5": recent_form(pid, 5),
             "serve_win_rate": rate_gap(pid, serve_totals),
             "return_win_rate": rate_gap(pid, return_totals),
