@@ -478,7 +478,7 @@ odds_a = st.number_input("Player A decimal odds", min_value=1.01, value=1.80, st
 odds_b = st.number_input("Player B decimal odds", min_value=1.01, value=2.10, step=0.01, key="odds_b_v2")
 
 
-def simulate_tennis_matches(player_a, player_b, surface_name, match_format, simulations=5000, seed=42):
+def simulate_tennis_matches(player_a, player_b, surface_name, match_format, simulations=5000, seed=None):
     """Vectorized point-by-point Monte Carlo simulation of best-of-3 or best-of-5 matches."""
     rng = np.random.default_rng(seed)
     # Blend each player's historical serve points won with the opponent's return points won.
@@ -599,9 +599,9 @@ if last_simulation and last_simulation.get("player_a") == player_a_name and last
     sim_col_a, sim_col_b = st.columns(2)
     sim_col_a.metric(player_a_name, f"{sim_result['probability_a']:.1%}", f"{sim_result['wins_a']:,} wins")
     sim_col_b.metric(player_b_name, f"{sim_result['probability_b']:.1%}", f"{sim_result['wins_b']:,} wins")
-    st.write("**Most common final set scores**")
+    st.write("**Most common match scores (sets)**")
     st.dataframe(
-        pd.DataFrame(sim_result["score_distribution"][:5], columns=["Final set score", "Simulations"]),
+        pd.DataFrame(sim_result["score_distribution"][:5], columns=["Match score (sets)", "Simulations"]),
         use_container_width=True, hide_index=True
     )
     st.caption("This is a statistical simulation, not a live match or a guarantee. Missing/neutral serve and return statistics use conservative baseline assumptions.")
