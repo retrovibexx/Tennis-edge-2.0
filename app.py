@@ -95,7 +95,10 @@ except Exception as exc:
     st.stop()
 
 name_to_ids = {}
+data_quality_report = players.get("_data_quality", {})
 for player_id, record in players.items():
+    if player_id.startswith("_") or not record.get("name"):
+        continue
     name_to_ids.setdefault(record["name"], []).append(player_id)
 player_names = sorted(name_to_ids)
 if len(player_names) < 2:
@@ -545,8 +548,8 @@ if st.button("ANALYZE MATCH", type="primary", use_container_width=True):
         a["elo"] - b["elo"],
         a["surface_elo"].get(surface, 1500) - b["surface_elo"].get(surface, 1500),
         np.log1p(rank_b) - np.log1p(rank_a),
-        a["form10"] - b["form10"],
-        a.get("form5", a["form10"]) - b.get("form5", b["form10"]),
+        a.get("quality_form10", a["form10"]) - b.get("quality_form10", b["form10"]),
+        a.get("quality_form5", a.get("form5", a["form10"])) - b.get("quality_form5", b.get("form5", b["form10"])),
         np.log1p(a["matches"]) - np.log1p(b["matches"]),
         float(a.get("h2h_weighted_surface", {}).get(get_player_id(player_b_name), {}).get(surface, a.get("h2h_weighted", {}).get(get_player_id(player_b_name), 0.0))),
         (pd.Timestamp(a["last_played"]) - pd.Timestamp(b["last_played"])).days if a.get("last_played") and b.get("last_played") else 0.0,
@@ -671,6 +674,18 @@ with st.expander("📊 Persistent prediction accuracy tracker", expanded=True):
                 st.info("No ungraded predictions yet. Analyze a match to log one.")
         except Exception as tracker_error:
             st.error(f"Could not load tracker: {tracker_error}")
+
+with st.expander("Data identity and calibration diagnostics"):
+    st.write("**Player identity checks**")
+    st.json(data_quality_report)
+    if METRICS_PATH.exists():
+        diagnostic_metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+        st.write("**Held-out calibration reliability**")
+        reliability = diagnostic_metrics.get("calibration_reliability_bins", [])
+        if reliability:
+            st.dataframe(pd.DataFrame(reliability), use_container_width=True, hide_index=True)
+        else:
+            st.info("Calibration bins will appear after the next successful retrain.")
 
 with st.expander("Model validation metrics"):
     if METRICS_PATH.exists():
