@@ -358,6 +358,13 @@ def build_training_data(files):
                 opponent: float(h2h_score(pid, opponent, matches["date"].max(), None))
                 for opponent in set(other for (player, other) in h2h_history if player == pid)
             },
+            "h2h_weighted_surface": {
+                opponent: {
+                    surface: float(h2h_score(pid, opponent, matches["date"].max(), surface))
+                    for surface in SURFACES
+                }
+                for opponent in set(other for (player, other) in h2h_history if player == pid)
+            },
             "h2h_counts": {
                 opponent: {
                     "wins": int(h2h.get((pid, opponent), 0)),
