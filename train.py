@@ -398,7 +398,9 @@ def main():
         "xgb": final_xgb,
         "logistic": final_logistic,
         "xgb_weight": xgb_weight,
+        "calibrator": calibrator,
         "features": FEATURES,
+        "calibration_method": "1D logistic calibration fitted on validation predictions",
     }, ARTIFACT_DIR / "model.joblib")
     (ARTIFACT_DIR / "player_state.json").write_text(
         json.dumps({"players": players}), encoding="utf-8"
