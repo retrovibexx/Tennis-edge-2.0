@@ -248,6 +248,14 @@ def build_training_data(files):
             expected_surface = 1 / (
                 1 + 10 ** ((surface_rating(loser, surface) - surface_rating(winner, surface)) / 400)
             )
+            # Start the comeback counter at zero on the first match after a
+            # 21+ day absence. Players with no prior history get no layoff boost.
+            for pid in (winner, loser):
+                previous = last_played.get(pid)
+                if previous is not None and (match_date - previous).days >= 21:
+                    played_since_return[pid] = 0
+                elif previous is None:
+                    played_since_return[pid] = 10
             level = str(row.get("tourney_level", "A"))
             base_k = 40 if level == "G" else 32 if level in ("M", "F") else 24
             shared_k = base_k * form_multiplier(winner, loser)
@@ -263,10 +271,7 @@ def build_training_data(files):
             surface_matches[(loser, surface)] = surface_matches.get((loser, surface), 0) + 1
 
             for pid in (winner, loser):
-                previous = last_played.get(pid)
-                if previous is None or (match_date - previous).days >= 21:
-                    played_since_return[pid] = 0
-                played_since_return[pid] = played_since_return.get(pid, 0) + 1
+                played_since_return[pid] = played_since_return.get(pid, 10) + 1
             form.setdefault(winner, []).append(1.0)
             form.setdefault(loser, []).append(0.0)
             form[winner], form[loser] = form[winner][-10:], form[loser][-10:]
